@@ -1,13 +1,11 @@
 import streamlit as st
 import pandas as pd
-import smtplib
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
+import requests
 
-# Configuração da página
+# Configuração da página da aplicação
 st.set_page_config(page_title="Configurador de Soluções TETRA | Motorola Solutions", layout="wide", page_icon="📻")
 
-# Estilização CSS
+# Estilização CSS personalizada
 st.markdown("""
 <style>
     .stApp { background-color: #f8f9fa; }
@@ -37,6 +35,9 @@ st.markdown("""
     }
 </style>
 """, unsafe_allow_html=True)
+
+# Endpoint fornecido pelo Formspree
+FORMSPREE_URL = "https://formspree.io/f/xnpnkkdp"
 
 # 1. Carregar planilha LPU ABIX V4
 @st.cache_data
@@ -131,55 +132,24 @@ INFO_RADIOS = {
     }
 }
 
-# --- Função de Envio de E-mail ---
-def enviar_email_cotacao(destinatario, dados_cliente, resumo_radios, resumo_sw, resumo_acc):
+# --- Função de Envio via Formspree (Sem Senhas) ---
+def enviar_cotacao_formspree(dados_cliente, resumo_radios, resumo_sw, resumo_acc):
     try:
-        # Obter credenciais salvas no Streamlit Secrets
-        smtp_server = st.secrets.get("SMTP_SERVER", "smtp.gmail.com")
-        smtp_port = int(st.secrets.get("SMTP_PORT", 587))
-        sender_email = st.secrets.get("SENDER_EMAIL", "")
-        sender_password = st.secrets.get("SENDER_PASSWORD", "")
-
-        if not sender_email or not sender_password:
-            return False, "Configurações de e-mail (SENDER_EMAIL / SENDER_PASSWORD) não foram definidas no Streamlit Secrets."
-
-        msg = MIMEMultipart()
-        msg['From'] = f"Configurador TETRA <{sender_email}>"
-        msg['To'] = destinatario
-        msg['Subject'] = f"🚨 Nova Solicitação de Cotação TETRA - {dados_cliente['empresa']}"
-
-        # Montagem do Corpo do E-mail em HTML
-        html_content = f"""
-        <h2>Nova Solicitação de Cotação de Equipamentos TETRA</h2>
-        <hr>
-        <h3>👤 Dados do Cliente / Solicitante:</h3>
-        <ul>
-            <li><b>Nome:</b> {dados_cliente['nome']}</li>
-            <li><b>E-mail:</b> {dados_cliente['email']}</li>
-            <li><b>Empresa:</b> {dados_cliente['empresa']}</li>
-            <li><b>Telefone:</b> {dados_cliente['telefone']}</li>
-        </ul>
-        <hr>
-        <h3>📻 Terminais / Rádios Selecionados:</h3>
-        {pd.DataFrame(resumo_radios).to_html(index=False, border=1) if resumo_radios else '<p>Nenhum</p>'}
-        <br>
-        <h3>💻 Licenças de Software (SW Features):</h3>
-        {pd.DataFrame(resumo_sw).to_html(index=False, border=1) if resumo_sw else '<p>Nenhuma licença extra selecionada</p>'}
-        <br>
-        <h3>🎧 Acessórios Adicionais:</h3>
-        {pd.DataFrame(resumo_acc).to_html(index=False, border=1) if resumo_acc else '<p>Nenhum acessório extra selecionado</p>'}
-        <hr>
-        <p><small>Mensagem gerada automaticamente pelo Configurador Web TETRA ABIX / Motorola Solutions.</small></p>
-        """
-
-        msg.attach(MIMEText(html_content, 'html'))
-
-        server = smtplib.SMTP(smtp_server, smtp_port)
-        server.starttls()
-        server.login(sender_email, sender_password)
-        server.sendmail(sender_email, destinatario, msg.as_string())
-        server.quit()
-        return True, "E-mail enviado com sucesso!"
+        payload = {
+            "Nome_Cliente": dados_cliente['nome'],
+            "Empresa": dados_cliente['empresa'],
+            "Email_Cliente": dados_cliente['email'],
+            "Telefone_Contato": dados_cliente['telefone'],
+            "Radios_Selecionados": str(resumo_radios),
+            "Licencas_SW": str(resumo_sw),
+            "Acessorios": str(resumo_acc)
+        }
+        
+        response = requests.post(FORMSPREE_URL, json=payload)
+        if response.status_code in [200, 202]:
+            return True, "Solicitação enviada com sucesso!"
+        else:
+            return False, f"Erro ao enviar pelo servidor (Código {response.status_code})"
     except Exception as e:
         return False, str(e)
 
@@ -342,7 +312,7 @@ if carrinho_radios:
         st.subheader("🎧 Acessórios Adicionais")
         st.table(pd.DataFrame(carrinho_acessorios)[['Descritivo', 'Qtd']])
 
-    st.success("Configuração concluída! Preencha seus dados de contato para gerar e enviar a solicitação.")
+    st.success("Configuração concluída! Preencha seus dados de contato para enviar a cotação.")
     
     with st.form("form_proposta"):
         c1, c2 = st.columns(2)
@@ -366,9 +336,7 @@ if carrinho_radios:
                     'telefone': telefone_cliente
                 }
                 
-                # Envio do e-mail
-                sucesso, msg_status = enviar_email_cotacao(
-                    destinatario="fabio.ashikaga@motorolasolutions.com",
+                sucesso, msg_status = enviar_cotacao_formspree(
                     dados_cliente=dados_c,
                     resumo_radios=resumo_r,
                     resumo_sw=carrinho_sw,
@@ -377,6 +345,6 @@ if carrinho_radios:
                 
                 if sucesso:
                     st.balloons()
-                    st.success("Sua solicitação de cotação foi enviada com sucesso para fabio.ashikaga@motorolasolutions.com!")
+                    st.success("Sua solicitação foi enviada com sucesso ao setor comercial!")
                 else:
-                    st.warning(f"Solicitação registrada na tela, porém o e-mail automático não foi disparado: {msg_status}")
+                    st.error(f"Erro ao enviar cotação: {msg_status}")
