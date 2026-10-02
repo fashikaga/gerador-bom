@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import requests
+import io
 
 # Configuração da página da aplicação
 st.set_page_config(page_title="Configurador de Soluções TETRA | Motorola Solutions", layout="wide", page_icon="📻")
@@ -36,7 +37,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Endpoint fornecido pelo Formspree
+# Endpoint do Formspree
 FORMSPREE_URL = "https://formspree.io/f/xnpnkkdp"
 
 # 1. Carregar planilha LPU ABIX V4
@@ -136,23 +137,22 @@ INFO_RADIOS = {
 def gerar_bom_detalhada(carrinho_radios, carrinho_sw, carrinho_acessorios):
     bom_rows = []
     
-    # 1. Processar Rádios Selecionados
+    # 1. Processar Rádios
     for r in carrinho_radios:
         sub_df = df_lpu[df_lpu['Categoria'] == r['categoria']].copy()
         if not sub_df.empty:
             sub_df['Qdade.'] = r['qtd']
             bom_rows.append(sub_df)
             
-    # 2. Processar Licenças de Software Selecionadas
+    # 2. Processar Licenças de Software
     for sw in carrinho_sw:
         sub_df = df_lpu[df_lpu['PN'] == sw['PN']].copy()
         if not sub_df.empty:
-            # Assumir quantidade equivalente à soma total de rádios da categoria correspondente
             qtd_aplicavel = sum(r['qtd'] for r in carrinho_radios if (r['e_portatil'] if sw['Tipo'] == 'Portátil' else not r['e_portatil']))
             sub_df['Qdade.'] = qtd_aplicavel if qtd_aplicavel > 0 else 1
             bom_rows.append(sub_df)
             
-    # 3. Processar Acessórios Selecionados
+    # 3. Processar Acessórios
     for acc in carrinho_acessorios:
         sub_df = df_lpu[df_lpu['PN'] == acc['PN']].copy()
         if not sub_df.empty:
@@ -161,11 +161,9 @@ def gerar_bom_detalhada(carrinho_radios, carrinho_sw, carrinho_acessorios):
 
     if bom_rows:
         df_bom = pd.concat(bom_rows)
-        # Selecionar e ordenar as colunas solicitadas
         colunas_finais = ['Grupo', 'PN', 'Descritivo', 'Unitário', 'Qdade.', 'Tipo', 'Importação']
         df_bom = df_bom[colunas_finais]
         
-        # Agrupar por PN para somar quantidades se houver duplicatas
         df_bom_consolidada = df_bom.groupby(
             ['Grupo', 'PN', 'Descritivo', 'Unitário', 'Tipo', 'Importação'], as_index=False
         ).agg({'Qdade.': 'sum'})
@@ -175,24 +173,40 @@ def gerar_bom_detalhada(carrinho_radios, carrinho_sw, carrinho_acessorios):
         return pd.DataFrame()
 
 
-# --- Função de Envio via Formspree ---
+# --- Função de Envio com Anexo CSV pelo Formspree ---
 def enviar_cotacao_formspree(dados_cliente, resumo_radios, resumo_sw, resumo_acc, df_bom_completa):
     try:
-        # Converter a BOM detalhada em HTML para o e-mail
-        html_bom = df_bom_completa.to_html(index=False, border=1) if not df_bom_completa.empty else "<p>Nenhum item</p>"
-        
-        payload = {
+        # Prepara o arquivo CSV na memória
+        csv_buffer = io.StringIO()
+        if not df_bom_completa.empty:
+            # Ponto e vírgula como separador para abrir perfeitamente no Excel em Português
+            df_bom_completa.to_csv(csv_buffer, index=False, sep=';', encoding='utf-8-sig')
+            csv_content = csv_buffer.getvalue()
+        else:
+            csv_content = "Grupo;PN;Descritivo;Unitário;Qdade.;Tipo;Importação\n"
+
+        # Formatando texto legível para o corpo do e-mail
+        texto_radios = "\n".join([f"- {r['Modelo / Terminal']}: {r['Quantidade de Rádios']} unidade(s) | Bat. Extra: {r['Baterias Extras Solicitadas']}" for r in resumo_radios])
+        texto_sw = "\n".join([f"- [{s['Tipo']}] {s['Descritivo']}" for s in resumo_sw]) if resumo_sw else "Nenhuma"
+        texto_acc = "\n".join([f"- {a['Descritivo']}: {a['Qtd']} un" for a in resumo_acc]) if resumo_acc else "Nenhum"
+
+        data = {
             "Nome_Cliente": dados_cliente['nome'],
             "Empresa": dados_cliente['empresa'],
             "Email_Cliente": dados_cliente['email'],
             "Telefone_Contato": dados_cliente['telefone'],
-            "Resumo_Radios": str(resumo_radios),
-            "Resumo_Licencas_SW": str(resumo_sw),
-            "Resumo_Acessorios": str(resumo_acc),
-            "BOM_COMPLETA_DETALHADA_HTML": html_bom
+            "Resumo_Terminais": texto_radios,
+            "Licencas_Software": texto_sw,
+            "Acessorios_Adicionais": texto_acc
         }
+
+        # Enviar o CSV como arquivo anexado multipart
+        files = {
+            "attachment": (f"BOM_TETRA_{dados_cliente['empresa'].replace(' ', '_')}.csv", csv_content, "text/csv")
+        }
+
+        response = requests.post(FORMSPREE_URL, data=data, files=files)
         
-        response = requests.post(FORMSPREE_URL, json=payload)
         if response.status_code in [200, 202]:
             return True, "Solicitação enviada com sucesso!"
         else:
@@ -362,7 +376,7 @@ if carrinho_radios:
     # Gerar a BOM em background
     df_bom_final = gerar_bom_detalhada(carrinho_radios, carrinho_sw, carrinho_acessorios)
 
-    st.success("Configuração concluída! Preencha seus dados de contato para enviar a solicitação com a BOM completa.")
+    st.success("Configuração concluída! Preencha seus dados para enviar a cotação com a BOM em anexo.")
     
     with st.form("form_proposta"):
         c1, c2 = st.columns(2)
@@ -396,6 +410,6 @@ if carrinho_radios:
                 
                 if sucesso:
                     st.balloons()
-                    st.success("Sua solicitação e a BOM detalhada foram enviadas com sucesso ao setor comercial!")
+                    st.success("Sua solicitação e o arquivo CSV da BOM foram enviados com sucesso ao setor comercial!")
                 else:
                     st.error(f"Erro ao enviar cotação: {msg_status}")
