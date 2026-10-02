@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import requests
-import io
 
 # Configuração da página da aplicação
 st.set_page_config(page_title="Configurador de Soluções TETRA | Motorola Solutions", layout="wide", page_icon="📻")
@@ -37,7 +36,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Endpoint do Formspree
+# Endpoint fornecido pelo Formspree
 FORMSPREE_URL = "https://formspree.io/f/xnpnkkdp"
 
 # 1. Carregar planilha LPU ABIX V4
@@ -173,39 +172,30 @@ def gerar_bom_detalhada(carrinho_radios, carrinho_sw, carrinho_acessorios):
         return pd.DataFrame()
 
 
-# --- Função de Envio com Anexo CSV pelo Formspree ---
+# --- Função de Envio Corrigida (Compatível com Formspree) ---
 def enviar_cotacao_formspree(dados_cliente, resumo_radios, resumo_sw, resumo_acc, df_bom_completa):
     try:
-        # Prepara o arquivo CSV na memória
-        csv_buffer = io.StringIO()
+        # Formatar a BOM como formato CSV/Texto com ponto e vírgula
         if not df_bom_completa.empty:
-            # Ponto e vírgula como separador para abrir perfeitamente no Excel em Português
-            df_bom_completa.to_csv(csv_buffer, index=False, sep=';', encoding='utf-8-sig')
-            csv_content = csv_buffer.getvalue()
+            bom_csv_str = df_bom_completa.to_csv(index=False, sep=';')
         else:
-            csv_content = "Grupo;PN;Descritivo;Unitário;Qdade.;Tipo;Importação\n"
+            bom_csv_str = "Nenhum item gerado."
 
-        # Formatando texto legível para o corpo do e-mail
-        texto_radios = "\n".join([f"- {r['Modelo / Terminal']}: {r['Quantidade de Rádios']} unidade(s) | Bat. Extra: {r['Baterias Extras Solicitadas']}" for r in resumo_radios])
-        texto_sw = "\n".join([f"- [{s['Tipo']}] {s['Descritivo']}" for s in resumo_sw]) if resumo_sw else "Nenhuma"
-        texto_acc = "\n".join([f"- {a['Descritivo']}: {a['Qtd']} un" for a in resumo_acc]) if resumo_acc else "Nenhum"
-
-        data = {
-            "Nome_Cliente": dados_cliente['nome'],
-            "Empresa": dados_cliente['empresa'],
-            "Email_Cliente": dados_cliente['email'],
-            "Telefone_Contato": dados_cliente['telefone'],
-            "Resumo_Terminais": texto_radios,
-            "Licencas_Software": texto_sw,
-            "Acessorios_Adicionais": texto_acc
+        # Montagem do payload em formato de campos do Formspree
+        payload = {
+            "name": dados_cliente['nome'],
+            "_replyto": dados_cliente['email'],
+            "email": dados_cliente['email'],
+            "empresa": dados_cliente['empresa'],
+            "telefone": dados_cliente['telefone'],
+            "termimais_selecionados": str(resumo_radios),
+            "licencas_sw": str(resumo_sw),
+            "acessorios": str(resumo_acc),
+            "BOM_LISTA_CSV": bom_csv_str
         }
 
-        # Enviar o CSV como arquivo anexado multipart
-        files = {
-            "attachment": (f"BOM_TETRA_{dados_cliente['empresa'].replace(' ', '_')}.csv", csv_content, "text/csv")
-        }
-
-        response = requests.post(FORMSPREE_URL, data=data, files=files)
+        # Envio padrão de formulário POST
+        response = requests.post(FORMSPREE_URL, data=payload)
         
         if response.status_code in [200, 202]:
             return True, "Solicitação enviada com sucesso!"
@@ -410,6 +400,6 @@ if carrinho_radios:
                 
                 if sucesso:
                     st.balloons()
-                    st.success("Sua solicitação e o arquivo CSV da BOM foram enviados com sucesso ao setor comercial!")
+                    st.success("Sua solicitação e a lista BOM foram enviadas com sucesso!")
                 else:
                     st.error(f"Erro ao enviar cotação: {msg_status}")
