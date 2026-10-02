@@ -132,17 +132,64 @@ INFO_RADIOS = {
     }
 }
 
-# --- Função de Envio via Formspree (Sem Senhas) ---
-def enviar_cotacao_formspree(dados_cliente, resumo_radios, resumo_sw, resumo_acc):
+# --- Função de Geração Automática da BOM ---
+def gerar_bom_detalhada(carrinho_radios, carrinho_sw, carrinho_acessorios):
+    bom_rows = []
+    
+    # 1. Processar Rádios Selecionados
+    for r in carrinho_radios:
+        sub_df = df_lpu[df_lpu['Categoria'] == r['categoria']].copy()
+        if not sub_df.empty:
+            sub_df['Qdade.'] = r['qtd']
+            bom_rows.append(sub_df)
+            
+    # 2. Processar Licenças de Software Selecionadas
+    for sw in carrinho_sw:
+        sub_df = df_lpu[df_lpu['PN'] == sw['PN']].copy()
+        if not sub_df.empty:
+            # Assumir quantidade equivalente à soma total de rádios da categoria correspondente
+            qtd_aplicavel = sum(r['qtd'] for r in carrinho_radios if (r['e_portatil'] if sw['Tipo'] == 'Portátil' else not r['e_portatil']))
+            sub_df['Qdade.'] = qtd_aplicavel if qtd_aplicavel > 0 else 1
+            bom_rows.append(sub_df)
+            
+    # 3. Processar Acessórios Selecionados
+    for acc in carrinho_acessorios:
+        sub_df = df_lpu[df_lpu['PN'] == acc['PN']].copy()
+        if not sub_df.empty:
+            sub_df['Qdade.'] = acc['Qtd']
+            bom_rows.append(sub_df)
+
+    if bom_rows:
+        df_bom = pd.concat(bom_rows)
+        # Selecionar e ordenar as colunas solicitadas
+        colunas_finais = ['Grupo', 'PN', 'Descritivo', 'Unitário', 'Qdade.', 'Tipo', 'Importação']
+        df_bom = df_bom[colunas_finais]
+        
+        # Agrupar por PN para somar quantidades se houver duplicatas
+        df_bom_consolidada = df_bom.groupby(
+            ['Grupo', 'PN', 'Descritivo', 'Unitário', 'Tipo', 'Importação'], as_index=False
+        ).agg({'Qdade.': 'sum'})
+        
+        return df_bom_consolidada[['Grupo', 'PN', 'Descritivo', 'Unitário', 'Qdade.', 'Tipo', 'Importação']]
+    else:
+        return pd.DataFrame()
+
+
+# --- Função de Envio via Formspree ---
+def enviar_cotacao_formspree(dados_cliente, resumo_radios, resumo_sw, resumo_acc, df_bom_completa):
     try:
+        # Converter a BOM detalhada em HTML para o e-mail
+        html_bom = df_bom_completa.to_html(index=False, border=1) if not df_bom_completa.empty else "<p>Nenhum item</p>"
+        
         payload = {
             "Nome_Cliente": dados_cliente['nome'],
             "Empresa": dados_cliente['empresa'],
             "Email_Cliente": dados_cliente['email'],
             "Telefone_Contato": dados_cliente['telefone'],
-            "Radios_Selecionados": str(resumo_radios),
-            "Licencas_SW": str(resumo_sw),
-            "Acessorios": str(resumo_acc)
+            "Resumo_Radios": str(resumo_radios),
+            "Resumo_Licencas_SW": str(resumo_sw),
+            "Resumo_Acessorios": str(resumo_acc),
+            "BOM_COMPLETA_DETALHADA_HTML": html_bom
         }
         
         response = requests.post(FORMSPREE_URL, json=payload)
@@ -312,7 +359,10 @@ if carrinho_radios:
         st.subheader("🎧 Acessórios Adicionais")
         st.table(pd.DataFrame(carrinho_acessorios)[['Descritivo', 'Qtd']])
 
-    st.success("Configuração concluída! Preencha seus dados de contato para enviar a cotação.")
+    # Gerar a BOM em background
+    df_bom_final = gerar_bom_detalhada(carrinho_radios, carrinho_sw, carrinho_acessorios)
+
+    st.success("Configuração concluída! Preencha seus dados de contato para enviar a solicitação com a BOM completa.")
     
     with st.form("form_proposta"):
         c1, c2 = st.columns(2)
@@ -340,11 +390,12 @@ if carrinho_radios:
                     dados_cliente=dados_c,
                     resumo_radios=resumo_r,
                     resumo_sw=carrinho_sw,
-                    resumo_acc=carrinho_acessorios
+                    resumo_acc=carrinho_acessorios,
+                    df_bom_completa=df_bom_final
                 )
                 
                 if sucesso:
                     st.balloons()
-                    st.success("Sua solicitação foi enviada com sucesso ao setor comercial!")
+                    st.success("Sua solicitação e a BOM detalhada foram enviadas com sucesso ao setor comercial!")
                 else:
                     st.error(f"Erro ao enviar cotação: {msg_status}")
